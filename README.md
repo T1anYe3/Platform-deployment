@@ -120,8 +120,8 @@ C:\platform1-docker\        (Windows)
 ### 方式二：Git 下载
 
 ```bash
-git clone <仓库地址> platform1-docker
-cd platform1-docker
+git clone https://github.com/T1anYe3/Platform-deployment.git
+cd Platform-deployment
 ```
 
 ---
