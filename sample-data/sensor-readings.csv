@@ -1,0 +1,13 @@
+timestamp,sensor_id,type,value,unit,location,level
+2026-05-10T08:00:00Z,S001,temperature,23.5,celsius,server-room-a,internal
+2026-05-10T08:05:00Z,S001,temperature,23.8,celsius,server-room-a,internal
+2026-05-10T08:10:00Z,S001,temperature,24.1,celsius,server-room-a,internal
+2026-05-10T08:00:00Z,S002,humidity,45.2,percent,server-room-a,internal
+2026-05-10T08:05:00Z,S002,humidity,46.0,percent,server-room-a,internal
+2026-05-10T08:10:00Z,S002,humidity,47.3,percent,server-room-a,internal
+2026-05-10T08:00:00Z,S003,power_draw,3.2,kw,rack-b-01,confidential
+2026-05-10T08:05:00Z,S003,power_draw,3.5,kw,rack-b-01,confidential
+2026-05-10T08:10:00Z,S003,power_draw,3.1,kw,rack-b-01,confidential
+2026-05-10T08:00:00Z,S004,network_throughput,850,mbps,core-switch-01,secret
+2026-05-10T08:05:00Z,S004,network_throughput,920,mbps,core-switch-01,secret
+2026-05-10T08:10:00Z,S004,network_throughput,880,mbps,core-switch-01,secret

@@ -1,0 +1,281 @@
+version: "3.9"
+
+# ============================================================
+# Platform 1 - Basic Technology Protection Platform
+# Docker Compose Deployment
+#
+# Usage:
+#   1. docker compose run --rm cert-init     # generate TLS certs
+#   2. docker compose up -d                  # start all services
+#   3. docker compose run --rm vault-init    # initialize Vault
+#   4. docker compose run --rm minio-init    # setup MinIO buckets
+#   5. docker compose run --rm kibana-init   # import Kibana assets
+#   6. docker compose run --rm nifi-init     # import NiFi flow template
+# ============================================================
+
+services:
+
+  # ---- Init: Generate TLS Certificates ----
+  cert-init:
+    image: alpine:3.20
+    volumes:
+      - tls-data:/tls
+      - ./scripts:/scripts:ro
+    command: sh /scripts/init-certs.sh
+    networks:
+      - platform1
+
+  # ---- Vault: Unified Trust Base ----
+  vault:
+    image: hashicorp/vault:1.21
+    container_name: platform1-vault
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - tls-data:/vault/tls:ro
+      - ./config/vault:/vault/config:ro
+      - vault-data:/vault/data
+    command: server -config=/vault/config/vault.hcl
+    environment:
+      VAULT_ADDR: https://127.0.0.1:8200
+      VAULT_CACERT: /vault/tls/root-ca.crt
+    healthcheck:
+      test: ["CMD", "vault", "status", "-tls-skip-verify"]
+      interval: 30s
+      retries: 5
+    networks:
+      - platform1
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  # ---- Elasticsearch: Log Storage & Retrieval ----
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.0
+    container_name: platform1-elasticsearch
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms${ES_MEMORY:-2g} -Xmx${ES_MEMORY:-2g}"
+      - network.host=0.0.0.0
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+      - ./config/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
+      interval: 30s
+      retries: 10
+    networks:
+      - platform1
+
+  # ---- Kibana: Visualization & Dashboards ----
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.4.0
+    container_name: platform1-kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - XPACK_SECURITY_ENABLED=false
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=platform1-kibana-demo-key-32chars
+    volumes:
+      - ./config/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:5601/api/status >/dev/null || exit 1"]
+      interval: 30s
+      retries: 10
+    networks:
+      - platform1
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # ---- MinIO: Object Storage ----
+  minio:
+    image: minio/minio:latest
+    container_name: platform1-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_SERVER_URL: http://localhost:9000
+    volumes:
+      - minio-data:/data
+      - tls-data:/root/.minio/certs:ro
+    command: server /data --console-address :9001 --address :9000
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9000/minio/health/live >/dev/null || exit 1"]
+      interval: 15s
+      retries: 5
+    networks:
+      - platform1
+
+  # ---- Apache NiFi: Data Flow Orchestration ----
+  nifi:
+    image: apache/nifi:2.3.0
+    container_name: platform1-nifi
+    ports:
+      - "8443:8443"
+    environment:
+      NIFI_WEB_HTTPS_HOST: 0.0.0.0
+      NIFI_WEB_HTTPS_PORT: "8443"
+      NIFI_WEB_HTTP_HOST: ""
+      NIFI_CLUSTER_IS_NODE: "false"
+      NIFI_CLUSTER_NODE_PROTOCOL_PORT: ""
+      SINGLE_USER_CREDENTIALS_USERNAME: ${NIFI_ADMIN_USER}
+      SINGLE_USER_CREDENTIALS_PASSWORD: ${NIFI_ADMIN_PASS}
+      AUTH: tls
+      NIFI_SENSITIVE_PROPS_KEY: platform1-nifi-sensitive-key-32
+    volumes:
+      - nifi-data:/opt/nifi/nifi-current/data
+      - ./sample-data:/opt/nifi/sample-data:ro
+      - tls-data/nifi:/opt/nifi/nifi-current/conf/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://localhost:8443/nifi-api/system-diagnostics >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      retries: 15
+      start_period: 120s
+    networks:
+      - platform1
+
+  # ---- SafeLine WAF: Web Application Firewall ----
+  # SafeLine CE requires its own docker-compose stack (5+ containers).
+  # It is deployed separately. See README for SafeLine installation steps.
+  # After SafeLine is running, the bridge-safeline.py script will
+  # connect to it at https://localhost:9443 and forward records to ES.
+
+  # ---- Suricata IDS: Intrusion Detection ----
+  suricata:
+    image: jasonish/suricata:latest
+    container_name: platform1-suricata
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./config/suricata/suricata.yaml:/etc/suricata/suricata.yaml:ro
+      - ./config/suricata/local.rules:/etc/suricata/rules/local.rules:ro
+      - suricata-logs:/var/log/suricata
+    command: suricata -i eth0 --init-errors-fatal
+    restart: unless-stopped
+
+  # ---- Bridge Runner: Scheduled data ingestion ----
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge
+    container_name: platform1-bridge
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts:ro
+      - bridge-state:/state
+      - suricata-logs:/suricata-logs:ro
+      - tls-data:/tls:ro
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /tls/root-ca.crt
+      MINIO_URL: http://minio:9000
+      NIFI_URL: https://nifi:8443
+    command: ["python", "/scripts/bridge-runner.py"]
+    restart: unless-stopped
+    networks:
+      - platform1
+
+# ---- Init Runners (run-once, via docker compose run) ----
+
+  vault-init:
+    image: hashicorp/vault:1.21
+    volumes:
+      - tls-data:/tls:ro
+      - ./config/vault:/vault/config:ro
+      - vault-data:/vault/data
+      - ./scripts:/scripts:ro
+    environment:
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /tls/root-ca.crt
+    entrypoint: ["sh", "/scripts/init-vault.sh"]
+    depends_on:
+      vault:
+        condition: service_healthy
+    networks:
+      - platform1
+
+  minio-init:
+    image: minio/mc:latest
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    entrypoint: ["sh", "/scripts/init-minio.sh"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - platform1
+
+  kibana-init:
+    image: curlimages/curl:latest
+
+volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      KIBANA_URL: http://kibana:5601
+    entrypoint: ["sh", "/scripts/init-kibana.sh"]
+    depends_on:
+      kibana:
+        condition: service_healthy
+    networks:
+      - platform1
+
+  nifi-init:
+    image: curlimages/curl:latest
+
+volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      NIFI_URL: https://nifi:8443
+      NIFI_ADMIN_USER: ${NIFI_ADMIN_USER}
+      NIFI_ADMIN_PASS: ${NIFI_ADMIN_PASS}
+    entrypoint: ["sh", "/scripts/init-nifi.sh"]
+    depends_on:
+      nifi:
+        condition: service_healthy
+    networks:
+      - platform1
+
+  health-check:
+    image: alpine:3.20
+
+volumes:
+      - ./scripts:/scripts:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["sh", "/scripts/health-check.sh"]
+    network_mode: host
+
+# ---- Volumes ----
+volumes:
+  tls-data:
+  vault-data:
+  es-data:
+  minio-data:
+  nifi-data:
+  suricata-logs:
+  bridge-state:
+
+# ---- Networks ----
+networks:
+  platform1:
+    driver: bridge

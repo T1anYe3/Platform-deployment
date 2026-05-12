@@ -1,0 +1,33 @@
+# Suricata minimal config for Platform 1 Docker deployment
+vars:
+  address-groups:
+    HOME_NET: "[192.168.0.0/16,10.0.0.0/8,172.16.0.0/12]"
+    EXTERNAL_NET: "!$HOME_NET"
+
+default-log-dir: /var/log/suricata
+default-rule-path: /etc/suricata/rules
+
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      types:
+        - alert:
+            payload: yes
+        - http:
+            extended: yes
+
+# Disable checksum validation in Docker/Lab environments
+stream:
+  checksum-validation: no
+
+# Load custom rules
+rule-files:
+  - local.rules
+
+# Minimal detection settings for lab
+detect:
+  profile: medium
+  sgh-mpm-context: auto
+  inspection-recursion-limit: 3000

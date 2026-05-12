@@ -1,0 +1,8 @@
+{"timestamp":"2026-05-10T08:00:01Z","user":"zhangsan","action":"login","source_ip":"192.168.1.100","status":"success","level":"internal"}
+{"timestamp":"2026-05-10T08:05:23Z","user":"lisi","action":"file_download","source_ip":"192.168.1.101","resource":"/data/report-q1.pdf","status":"success","level":"internal"}
+{"timestamp":"2026-05-10T08:12:45Z","user":"wangwu","action":"api_call","source_ip":"10.0.0.50","endpoint":"/api/v1/records","status":"success","level":"confidential"}
+{"timestamp":"2026-05-10T08:20:10Z","user":"zhangsan","action":"logout","source_ip":"192.168.1.100","status":"success","level":"internal"}
+{"timestamp":"2026-05-10T08:30:55Z","user":"admin","action":"config_change","source_ip":"10.0.0.1","detail":"firewall-rule-update","status":"success","level":"secret"}
+{"timestamp":"2026-05-10T09:00:00Z","user":"lisi","action":"file_upload","source_ip":"192.168.1.101","resource":"/data/sensor-feed.csv","status":"success","level":"internal"}
+{"timestamp":"2026-05-10T09:15:33Z","user":"wangwu","action":"data_export","source_ip":"10.0.0.50","resource":"/exports/user-report.csv","status":"denied","level":"confidential"}
+{"timestamp":"2026-05-10T09:45:12Z","user":"zhangsan","action":"login","source_ip":"192.168.1.100","status":"success","level":"internal"}
