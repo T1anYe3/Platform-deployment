@@ -1,0 +1,11 @@
+log:
+  output: stdout
+  level:  warn
+server:
+  listen_addr: unix:///app/sock/waiting.sock
+  tcp_listen_addr: unix:///app/sock/waiting_tcp.sock
+  max_concurrent: 5
+  max_waiting: 10000
+  cp_session_timeout: 120
+  wq_session_timeout: 30
+  mgt_addr: "http://safeline-mgt"

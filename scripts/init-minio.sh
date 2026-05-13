@@ -4,12 +4,12 @@
 set -e
 
 MINIO_ALIAS="platform1"
-MINIO_URL="http://minio:9000"
+MINIO_URL="https://minio:9000"
 MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_PASS="${MINIO_ROOT_PASSWORD:-ChangeThis-Local-123!}"
 
 echo "[minio-init] Configuring MinIO client..."
-mc alias set ${MINIO_ALIAS} ${MINIO_URL} ${MINIO_USER} ${MINIO_PASS}
+mc alias set ${MINIO_ALIAS} ${MINIO_URL} ${MINIO_USER} ${MINIO_PASS} --insecure
 
 echo "[minio-init] Creating buckets..."
 BUCKETS="raw-data processed-data model-files evaluation-results archive-data audit-evidence"

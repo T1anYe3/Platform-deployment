@@ -1,0 +1,13 @@
+# SafeLine CE override - integrates with Platform 1 network
+# This allows platform1-bridge to reach safeline-mgt
+
+services:
+  mgt:
+    networks:
+      platform1-docker_platform1:
+    ports:
+      - "9443:1443"
+
+networks:
+  platform1-docker_platform1:
+    external: true

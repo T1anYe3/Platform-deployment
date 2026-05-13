@@ -21,7 +21,7 @@ services:
     volumes:
       - tls-data:/tls
       - ./scripts:/scripts:ro
-    command: sh /scripts/init-certs.sh
+    command: sh -c "apk add --no-cache openssl >/dev/null 2>&1 && sh /scripts/init-certs.sh && chmod -R a+r /tls"
     networks:
       - platform1
 
@@ -37,12 +37,13 @@ services:
       - tls-data:/vault/tls:ro
       - ./config/vault:/vault/config:ro
       - vault-data:/vault/data
-    command: server -config=/vault/config/vault.hcl
+    user: root
+    entrypoint: ["/bin/sh", "-c", "chown -R vault:vault /vault/data 2>/dev/null; exec /usr/local/bin/docker-entrypoint.sh vault server -config=/vault/config/vault.hcl"]
     environment:
       VAULT_ADDR: https://127.0.0.1:8200
       VAULT_CACERT: /vault/tls/root-ca.crt
     healthcheck:
-      test: ["CMD", "vault", "status", "-tls-skip-verify"]
+      test: ["CMD-SHELL", "vault status -tls-skip-verify >/dev/null 2>&1 || [ $$? -eq 2 ]"]
       interval: 30s
       retries: 5
     networks:
@@ -59,14 +60,15 @@ services:
       - "9200:9200"
     environment:
       - discovery.type=single-node
-      - xpack.security.enabled=false
+      - xpack.security.enabled=${ES_SECURITY_ENABLED:-false}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
       - "ES_JAVA_OPTS=-Xms${ES_MEMORY:-2g} -Xmx${ES_MEMORY:-2g}"
       - network.host=0.0.0.0
     volumes:
       - es-data:/usr/share/elasticsearch/data
       - ./config/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "if [ \"${ES_SECURITY_ENABLED:-false}\" = \"true\" ]; then curl -s -u elastic:${ELASTIC_PASSWORD:-changeme} http://localhost:9200 >/dev/null || exit 1; else curl -s http://localhost:9200 >/dev/null || exit 1; fi"]
       interval: 30s
       retries: 10
     networks:
@@ -81,12 +83,14 @@ services:
     environment:
       - SERVER_HOST=0.0.0.0
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-      - XPACK_SECURITY_ENABLED=false
-      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=platform1-kibana-demo-key-32chars
+      - ELASTICSEARCH_USERNAME=${KIBANA_ES_USER:-}
+      - ELASTICSEARCH_PASSWORD=${KIBANA_ES_PASSWORD:-}
+      - XPACK_SECURITY_ENABLED=${ES_SECURITY_ENABLED:-false}
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_ENCRYPTION_KEY:-platform1-kibana-demo-key-32chars}
     volumes:
       - ./config/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:5601/api/status >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "if [ \"${ES_SECURITY_ENABLED:-false}\" = \"true\" ]; then curl -s -u kibana_system:${KIBANA_ES_PASSWORD:-changeme} http://localhost:5601/api/status >/dev/null || exit 1; else curl -s http://localhost:5601/api/status >/dev/null || exit 1; fi"]
       interval: 30s
       retries: 10
     networks:
@@ -105,13 +109,13 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_SERVER_URL: http://localhost:9000
+      MINIO_SERVER_URL: https://minio:9000
     volumes:
       - minio-data:/data
       - tls-data:/root/.minio/certs:ro
-    command: server /data --console-address :9001 --address :9000
+    command: server /data --console-address :9001 --address :9000 --certs-dir /root/.minio/certs
     healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:9000/minio/health/live >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -sk https://localhost:9000/minio/health/live >/dev/null || exit 1"]
       interval: 15s
       retries: 5
     networks:
@@ -126,19 +130,15 @@ services:
     environment:
       NIFI_WEB_HTTPS_HOST: 0.0.0.0
       NIFI_WEB_HTTPS_PORT: "8443"
-      NIFI_WEB_HTTP_HOST: ""
-      NIFI_CLUSTER_IS_NODE: "false"
-      NIFI_CLUSTER_NODE_PROTOCOL_PORT: ""
+      NIFI_WEB_PROXY_HOST: nifi:8443
       SINGLE_USER_CREDENTIALS_USERNAME: ${NIFI_ADMIN_USER}
       SINGLE_USER_CREDENTIALS_PASSWORD: ${NIFI_ADMIN_PASS}
-      AUTH: tls
       NIFI_SENSITIVE_PROPS_KEY: platform1-nifi-sensitive-key-32
     volumes:
       - nifi-data:/opt/nifi/nifi-current/data
       - ./sample-data:/opt/nifi/sample-data:ro
-      - tls-data/nifi:/opt/nifi/nifi-current/conf/certs:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -sk https://localhost:8443/nifi-api/system-diagnostics >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "curl -sk https://localhost:8443/nifi-api/system-diagnostics >/dev/null 2>&1"]
       interval: 30s
       retries: 15
       start_period: 120s
@@ -162,8 +162,14 @@ services:
     volumes:
       - ./config/suricata/suricata.yaml:/etc/suricata/suricata.yaml:ro
       - ./config/suricata/local.rules:/etc/suricata/rules/local.rules:ro
+      - suricata-rules:/etc/suricata/rules/et:ro
       - suricata-logs:/var/log/suricata
     command: suricata -i eth0 --init-errors-fatal
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f Suricata-Main >/dev/null || exit 1"]
+      interval: 30s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   # ---- Bridge Runner: Scheduled data ingestion ----
@@ -182,18 +188,93 @@ services:
       - bridge-state:/state
       - suricata-logs:/suricata-logs:ro
       - tls-data:/tls:ro
+      - vault-data:/vault/data:ro
     environment:
       ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_USER: ${ES_USER:-elastic}
+      ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:-}
       VAULT_ADDR: https://vault:8200
       VAULT_CACERT: /tls/root-ca.crt
-      MINIO_URL: http://minio:9000
+      MINIO_URL: https://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       NIFI_URL: https://nifi:8443
+      NIFI_ADMIN_USER: ${NIFI_ADMIN_USER}
+      NIFI_ADMIN_PASS: ${NIFI_ADMIN_PASS}
+      SAFELINE_URL: https://safeline-mgt:1443
+      SAFELINE_ADMIN_USER: ${SAFELINE_ADMIN_USER}
+      SAFELINE_ADMIN_PASS: ${SAFELINE_ADMIN_PASS}
     command: ["python", "/scripts/bridge-runner.py"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f bridge-runner.py >/dev/null || exit 1"]
+      interval: 30s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
     networks:
       - platform1
 
 # ---- Init Runners (run-once, via docker compose run) ----
+
+  es-users-init:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.0
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      KIBANA_ES_PASSWORD: ${KIBANA_ES_PASSWORD:-}
+      ES_SECURITY_ENABLED: ${ES_SECURITY_ENABLED:-false}
+    entrypoint: ["sh", "/scripts/init-es-users.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - platform1
+
+  suricata-update-init:
+    image: jasonish/suricata:latest
+    volumes:
+      - suricata-rules:/var/lib/suricata/rules
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        suricata-update update-sources 2>/dev/null || true
+        suricata-update enable-source et/open 2>/dev/null || true
+        suricata-update 2>/dev/null || true
+        cp /var/lib/suricata/rules/suricata.rules /var/lib/suricata/rules/et-open.rules
+        echo "[suricata-update-init] ET Open rules downloaded: $$(wc -l < /var/lib/suricata/rules/et-open.rules) rules"
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  dashboard-init:
+    image: python:3.12-alpine
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      KIBANA_URL: http://kibana:5601
+    entrypoint: ["python3", "/scripts/init-dashboards.py"]
+    depends_on:
+      kibana:
+        condition: service_healthy
+    networks:
+      - platform1
+
+  ilm-init:
+    image: curlimages/curl:latest
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_USER: ${ES_USER:-}
+      ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:-}
+    entrypoint: ["sh", "/scripts/init-ilm.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - platform1
 
   vault-init:
     image: hashicorp/vault:1.21
@@ -228,8 +309,7 @@ services:
 
   kibana-init:
     image: curlimages/curl:latest
-
-volumes:
+    volumes:
       - ./scripts:/scripts:ro
     environment:
       KIBANA_URL: http://kibana:5601
@@ -242,8 +322,7 @@ volumes:
 
   nifi-init:
     image: curlimages/curl:latest
-
-volumes:
+    volumes:
       - ./scripts:/scripts:ro
     environment:
       NIFI_URL: https://nifi:8443
@@ -258,8 +337,7 @@ volumes:
 
   health-check:
     image: alpine:3.20
-
-volumes:
+    volumes:
       - ./scripts:/scripts:ro
       - /var/run/docker.sock:/var/run/docker.sock
     entrypoint: ["sh", "/scripts/health-check.sh"]
@@ -272,6 +350,7 @@ volumes:
   es-data:
   minio-data:
   nifi-data:
+  suricata-rules:
   suricata-logs:
   bridge-state:
 

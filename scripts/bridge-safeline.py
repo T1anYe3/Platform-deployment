@@ -2,10 +2,9 @@
 """Bridge: SafeLine WAF attack records → Elasticsearch"""
 
 import os, sys, json, time
-import urllib.request, urllib.error
+from bridge_common import es_request, es_bulk_index, ensure_index_template, ES_URL
 import ssl
 
-ES_URL = os.environ.get('ELASTICSEARCH_URL', 'http://elasticsearch:9200')
 SAFELINE_URL = os.environ.get('SAFELINE_URL', 'https://safeline:9443')
 SAFELINE_USER = os.environ.get('SAFELINE_ADMIN_USER', 'admin')
 SAFELINE_PASS = os.environ.get('SAFELINE_ADMIN_PASS', 'w4WmJByY')
@@ -25,33 +24,17 @@ def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f)
 
-def ensure_index_template():
-    template = {
-        'index_patterns': ['safeline-records-*'],
-        'template': {
-            'settings': {'number_of_shards': 1, 'number_of_replicas': 0},
-            'mappings': {
-                'properties': {
-                    '@timestamp': {'type': 'date'},
-                    'event.source': {'type': 'keyword'},
-                    'event_id': {'type': 'keyword'},
-                    'src_ip': {'type': 'ip'},
-                    'attack_type': {'type': 'keyword'},
-                    'action': {'type': 'keyword'},
-                    'risk_level': {'type': 'integer'},
-                    'module': {'type': 'keyword'},
-                    'message': {'type': 'text'}
-                }
-            }
-        }
-    }
-    req = urllib.request.Request(
-        f'{ES_URL}/_index_template/safeline-records-template',
-        data=json.dumps(template).encode(),
-        headers={'Content-Type': 'application/json'},
-        method='PUT'
-    )
-    urllib.request.urlopen(req, context=ctx, timeout=10)
+SAFELINE_MAPPINGS = {
+    '@timestamp': {'type': 'date'},
+    'event.source': {'type': 'keyword'},
+    'event_id': {'type': 'keyword'},
+    'src_ip': {'type': 'ip'},
+    'attack_type': {'type': 'keyword'},
+    'action': {'type': 'keyword'},
+    'risk_level': {'type': 'integer'},
+    'module': {'type': 'keyword'},
+    'message': {'type': 'text'}
+}
 
 def get_safeline_jwt():
     """Authenticate to SafeLine and get JWT token."""
@@ -104,20 +87,12 @@ def index_records(records):
         }}))
         lines.append(json.dumps(doc, default=str))
     body = '\n'.join(lines) + '\n'
-    req = urllib.request.Request(
-        f'{ES_URL}/_bulk',
-        data=body.encode(),
-        headers={'Content-Type': 'application/x-ndjson'}
-    )
-    resp = urllib.request.urlopen(req, timeout=30)
-    result = json.loads(resp.read())
-    if result.get('errors'):
-        print(f'Bulk errors: {result["errors"]}', file=sys.stderr)
+    es_bulk_index(lines)
     return len(records)
 
 def main():
     state = load_state()
-    ensure_index_template()
+    ensure_index_template('safeline-records', SAFELINE_MAPPINGS)
     try:
         jwt = get_safeline_jwt()
         records = fetch_records(jwt, state['last_event_id'])

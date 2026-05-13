@@ -2,10 +2,9 @@
 """Bridge: MinIO server & bucket status → Elasticsearch"""
 
 import os, sys, json, time, subprocess
-import urllib.request
+from bridge_common import es_request, es_bulk_index, ensure_index_template, ES_URL
 
-ES_URL = os.environ.get('ELASTICSEARCH_URL', 'http://elasticsearch:9200')
-MINIO_URL = os.environ.get('MINIO_URL', 'http://minio:9000')
+MINIO_URL = os.environ.get('MINIO_URL', 'https://minio:9000')
 MINIO_USER = os.environ.get('MINIO_ROOT_USER', 'minioadmin')
 MINIO_PASS = os.environ.get('MINIO_ROOT_PASSWORD', 'ChangeThis-Local-123!')
 STATE_FILE = '/state/minio-bridge.json'
@@ -13,37 +12,21 @@ MC_ALIAS = 'platform1'
 
 BUCKETS = ['raw-data', 'processed-data', 'model-files', 'evaluation-results', 'archive-data', 'audit-evidence']
 
-def ensure_index_template():
-    template = {
-        'index_patterns': ['minio-audit-*'],
-        'template': {
-            'settings': {'number_of_shards': 1, 'number_of_replicas': 0},
-            'mappings': {
-                'properties': {
-                    '@timestamp': {'type': 'date'},
-                    'event.source': {'type': 'keyword'},
-                    'event.action': {'type': 'keyword'},
-                    'minio': {
-                        'properties': {
-                            'bucket': {'type': 'keyword'},
-                            'objects': {'type': 'long'},
-                            'size_bytes': {'type': 'long'},
-                            'status': {'type': 'keyword'},
-                            'uptime_seconds': {'type': 'long'}
-                        }
-                    },
-                    'message': {'type': 'text'}
-                }
-            }
+MINIO_MAPPINGS = {
+    '@timestamp': {'type': 'date'},
+    'event.source': {'type': 'keyword'},
+    'event.action': {'type': 'keyword'},
+    'minio': {
+        'properties': {
+            'bucket': {'type': 'keyword'},
+            'objects': {'type': 'long'},
+            'size_bytes': {'type': 'long'},
+            'status': {'type': 'keyword'},
+            'uptime_seconds': {'type': 'long'}
         }
-    }
-    req = urllib.request.Request(
-        f'{ES_URL}/_index_template/minio-audit-template',
-        data=json.dumps(template).encode(),
-        headers={'Content-Type': 'application/json'},
-        method='PUT'
-    )
-    urllib.request.urlopen(req, timeout=10)
+    },
+    'message': {'type': 'text'}
+}
 
 def mc(*args):
     """Run MinIO client command."""
@@ -59,7 +42,7 @@ def get_minio_events():
     now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
     # Configure mc alias
-    mc('alias', 'set', MC_ALIAS, MINIO_URL, MINIO_USER, MINIO_PASS)
+    mc('alias', 'set', MC_ALIAS, MINIO_URL, MINIO_USER, MINIO_PASS, '--insecure')
 
     # Server info
     info = mc('admin', 'info', MC_ALIAS)
@@ -94,20 +77,11 @@ def index_events(events):
         uid = f"minio-{doc['event.action']}-{date}-{hash(json.dumps(doc, sort_keys=True)) & 0x7FFFFFFF:08x}"
         lines.append(json.dumps({'index': {'_index': f'minio-audit-{date}', '_id': uid}}))
         lines.append(json.dumps(doc))
-    body = '\n'.join(lines) + '\n'
-    req = urllib.request.Request(
-        f'{ES_URL}/_bulk',
-        data=body.encode(),
-        headers={'Content-Type': 'application/x-ndjson'}
-    )
-    resp = urllib.request.urlopen(req, timeout=30)
-    result = json.loads(resp.read())
-    if result.get('errors'):
-        print('Bulk errors', file=sys.stderr)
+    es_bulk_index(lines)
     return len(events)
 
 def main():
-    ensure_index_template()
+    ensure_index_template('minio-audit', MINIO_MAPPINGS)
     events = get_minio_events()
     indexed = index_events(events)
     print(f'Indexed {indexed} MinIO events')

@@ -2,47 +2,30 @@
 """Bridge: NiFi system diagnostics → Elasticsearch"""
 
 import os, sys, json, time, subprocess
-import urllib.request
+from bridge_common import es_request, es_bulk_index, ensure_index_template, ES_URL
 
-ES_URL = os.environ.get('ELASTICSEARCH_URL', 'http://elasticsearch:9200')
 NIFI_URL = os.environ.get('NIFI_URL', 'https://nifi:8443')
 NIFI_USER = os.environ.get('NIFI_ADMIN_USER', 'admin')
 NIFI_PASS = os.environ.get('NIFI_ADMIN_PASS', 'Admin123!ChangeMe')
 STATE_FILE = '/state/nifi-bridge.json'
 
-def ensure_index_template():
-    template = {
-        'index_patterns': ['nifi-logs-*'],
-        'template': {
-            'settings': {'number_of_shards': 1, 'number_of_replicas': 0},
-            'mappings': {
-                'properties': {
-                    '@timestamp': {'type': 'date'},
-                    'event.source': {'type': 'keyword'},
-                    'event.action': {'type': 'keyword'},
-                    'nifi': {
-                        'properties': {
-                            'active_threads': {'type': 'integer'},
-                            'queued_count': {'type': 'long'},
-                            'processors_running': {'type': 'integer'},
-                            'processors_stopped': {'type': 'integer'},
-                            'free_memory_mb': {'type': 'long'},
-                            'total_memory_mb': {'type': 'long'},
-                            'cluster_nodes': {'type': 'integer'}
-                        }
-                    },
-                    'message': {'type': 'text'}
-                }
-            }
+NIFI_MAPPINGS = {
+    '@timestamp': {'type': 'date'},
+    'event.source': {'type': 'keyword'},
+    'event.action': {'type': 'keyword'},
+    'nifi': {
+        'properties': {
+            'active_threads': {'type': 'integer'},
+            'queued_count': {'type': 'long'},
+            'processors_running': {'type': 'integer'},
+            'processors_stopped': {'type': 'integer'},
+            'free_memory_mb': {'type': 'long'},
+            'total_memory_mb': {'type': 'long'},
+            'cluster_nodes': {'type': 'integer'}
         }
-    }
-    req = urllib.request.Request(
-        f'{ES_URL}/_index_template/nifi-logs-template',
-        data=json.dumps(template).encode(),
-        headers={'Content-Type': 'application/json'},
-        method='PUT'
-    )
-    urllib.request.urlopen(req, timeout=10)
+    },
+    'message': {'type': 'text'}
+}
 
 def get_nifi_token():
     """Get NiFi JWT access token."""
@@ -135,19 +118,11 @@ def index_events(events):
         lines.append(json.dumps({'index': {'_index': f'nifi-logs-{date}', '_id': uid}}))
         lines.append(json.dumps(doc))
     body = '\n'.join(lines) + '\n'
-    req = urllib.request.Request(
-        f'{ES_URL}/_bulk',
-        data=body.encode(),
-        headers={'Content-Type': 'application/x-ndjson'}
-    )
-    resp = urllib.request.urlopen(req, timeout=30)
-    result = json.loads(resp.read())
-    if result.get('errors'):
-        print('Bulk errors', file=sys.stderr)
+    es_bulk_index(lines)
     return len(events)
 
 def main():
-    ensure_index_template()
+    ensure_index_template('nifi-logs', NIFI_MAPPINGS)
     events = get_nifi_events()
     indexed = index_events(events)
     print(f'Indexed {indexed} NiFi events')

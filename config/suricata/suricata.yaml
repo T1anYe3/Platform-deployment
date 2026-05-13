@@ -1,3 +1,5 @@
+%YAML 1.1
+---
 # Suricata minimal config for Platform 1 Docker deployment
 vars:
   address-groups:
@@ -25,6 +27,7 @@ stream:
 # Load custom rules
 rule-files:
   - local.rules
+  - et/et-open.rules
 
 # Minimal detection settings for lab
 detect:

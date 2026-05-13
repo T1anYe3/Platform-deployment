@@ -1,0 +1,11 @@
+# generated health-check
+server {
+    listen 65443;
+    server_name _;
+    access_log off;
+    location / {
+        return 200;
+    }
+    t1k_intercept off;
+    tx_intercept off;
+}

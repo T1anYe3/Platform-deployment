@@ -1,0 +1,58 @@
+version: "3.9"
+
+# Platform 1 optional monitoring stack (Prometheus + Grafana + exporters)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#        or: bash init.sh --monitor
+
+services:
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: platform1-node-exporter
+    network_mode: host
+    pid: host
+    restart: unless-stopped
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - '--path.rootfs=/host'
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: platform1-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+    restart: unless-stopped
+    networks:
+      - platform1-docker_platform1
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: platform1-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-platform1}
+    volumes:
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana/dashboards-json:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+    networks:
+      - platform1-docker_platform1
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  platform1-docker_platform1:
+    external: true
