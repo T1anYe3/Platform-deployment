@@ -1,19 +1,93 @@
 # Platform 1 — 基础技术防护平台 Docker 部署指南
 
-> 本指南面向**零 Docker 基础**的用户。从安装 Docker 到完成平台演示，每一步都有详细说明。
+> **一键部署**：`bash init.sh --secure --monitor --with-safeline`
 
 ---
 
 ## 目录
 
-1. [平台简介](#1-平台简介)
-2. [准备工作：安装 Docker](#2-准备工作安装-docker)
-3. [获取部署文件](#3-获取部署文件)
-4. [部署平台](#4-部署平台)
-5. [验证部署](#5-验证部署)
-6. [访问与演示](#6-访问与演示)
-7. [常用操作](#7-常用操作)
-8. [故障排查](#8-故障排查)
+1. [⚡ 快速开始（推荐）](#-快速开始推荐)
+2. [平台简介](#1-平台简介)
+3. [准备工作：安装 Docker](#2-准备工作安装-docker)
+4. [获取部署文件](#3-获取部署文件)
+5. [部署选项说明](#4-部署选项说明)
+6. [访问与演示](#5-访问与演示)
+7. [常用操作](#6-常用操作)
+8. [故障排查](#7-故障排查)
+
+---
+
+## ⚡ 快速开始（推荐）
+
+### 第一步：安装 Docker
+
+```bash
+# Windows: 下载 Docker Desktop → https://www.docker.com/products/docker-desktop/
+# Mac: 同上
+# Linux: curl -fsSL https://get.docker.com | sudo sh
+docker --version  # 验证安装
+```
+
+### 第二步：获取代码
+
+```bash
+git clone https://github.com/T1anYe3/Platform-deployment.git
+cd Platform-deployment
+```
+
+### 第三步：一键部署
+
+```bash
+# 全功能部署（认证 + 监控 + WAF + 安全规则集）
+bash init.sh --secure --monitor --with-safeline
+
+# 基础部署（6 个核心服务，无需认证）
+bash init.sh
+
+# 全新部署（清除旧数据）
+bash init.sh --reset --secure --monitor --with-safeline
+```
+
+> 首次运行需拉取镜像（约 5-8 GB），请等待 10-20 分钟。看到 `[OK]` 冒烟测试全部通过即部署完成。
+
+### `init.sh` 参数一览
+
+| 参数 | 作用 |
+|------|------|
+| `--secure` | 启用 ES/Kibana 认证，自动生成随机密码写入 `.env` |
+| `--monitor` | 附加部署 Prometheus + Grafana 监控栈 |
+| `--with-safeline` | 附加部署 SafeLine CE（雷池 WAF，7 容器） |
+| `--reset` | 删除所有数据卷，全新初始化 |
+| `--skip-init` | 只启动服务，跳过 4 个初始化容器 |
+| `--backup` | 执行数据备份（ES 快照 + Vault 导出 + .env） |
+| `--restore PATH` | 从指定备份路径恢复数据 |
+
+### 部署后访问
+
+| 服务 | 地址 | 说明 |
+|------|------|------|
+| Kibana | http://localhost:5601 | 安全仪表板 |
+| MinIO Console | http://localhost:9001 | 对象存储管理 |
+| Vault UI | https://localhost:8200 | 密钥管理 |
+| NiFi | https://localhost:8443/nifi | 数据流编排 |
+| Grafana | http://localhost:3000 | 仅 `--monitor` |
+| Prometheus | http://localhost:9090 | 仅 `--monitor` |
+| SafeLine WAF | https://localhost:9443 | 仅 `--with-safeline` |
+
+### 默认凭证
+
+| 服务 | 用户名 | 密码 |
+|------|--------|------|
+| MinIO | `minioadmin` | 见 `.env` 中 `MINIO_ROOT_PASSWORD` |
+| NiFi | `admin` | 见 `.env` 中 `NIFI_ADMIN_PASS` |
+| SafeLine | `admin` | `docker exec safeline-mgt resetadmin` 查看 |
+| Vault | Token 登录 | 见 `docker compose logs vault-init` 末尾 |
+| Grafana | `admin` | `platform1` |
+| ES (--secure) | `elastic` | 见 `.env` 中 `ELASTIC_PASSWORD`（自动生成） |
+
+### 如果没有 SafeLine
+
+不加 `--with-safeline` 即可跳过 WAF 部署，其余 6 个核心服务正常运行。
 
 ---
 
@@ -29,8 +103,11 @@ Platform 1（基础技术防护平台）包含以下组件：
 | MinIO | 对象存储 | http://localhost:9001 |
 | NiFi | 数据流编排 | https://localhost:8443/nifi |
 | Suricata | 网络入侵检测 | （后台运行） |
+| SafeLine WAF | Web 应用防火墙 | https://localhost:9443 |
+| Prometheus | 监控指标采集 | http://localhost:9090 |
+| Grafana | 监控可视化 | http://localhost:3000 |
 
-部署完成后，所有组件将自动协同工作：Suricata 检测异常流量 → 日志写入 Elasticsearch → Kibana 可视化展示。
+部署完成后，所有组件将自动协同工作：WAF/IDS 检测攻击 → Bridge 采集日志 → Elasticsearch 存储 → Kibana 可视化展示。
 
 ---
 
@@ -108,145 +185,66 @@ docker run --rm hello-world
 
 ## 3. 获取部署文件
 
-### 方式一：U 盘/文件夹拷贝（推荐给新手）
-
-将整个 `platform1-docker/` 文件夹拷贝到你的电脑上任意位置（**路径不要包含中文**），例如：
-
-```
-C:\platform1-docker\        (Windows)
-~/platform1-docker/         (Mac/Linux)
-```
-
-### 方式二：Git 下载
+### 方式一：Git 克隆（推荐）
 
 ```bash
 git clone https://github.com/T1anYe3/Platform-deployment.git
 cd Platform-deployment
 ```
 
+### 方式二：下载 ZIP
+
+在 https://github.com/T1anYe3/Platform-deployment 点击 **Code → Download ZIP**，解压到不含中文的路径。
+
 ---
 
-## 4. 部署平台
+## 4. 部署选项说明
 
-### 确保在正确目录
-
-打开终端（Windows 用 PowerShell，Mac/Linux 用 Terminal），进入 `platform1-docker` 文件夹：
+### 4.1 一键部署（推荐）
 
 ```bash
-cd platform1-docker
+bash init.sh --secure --monitor --with-safeline
 ```
 
-> Windows 用户：如果文件夹在 D 盘，先执行 `D:` 切换到 D 盘再 `cd platform1-docker`
+`init.sh` 自动完成：生成证书 → 启动全部服务 → 等待 healthy → 初始化 Vault/MinIO/Kibana/NiFi → ES ILM 策略 → Dashboard 面板 → API 冒烟测试。
 
-### 第一步：配置密码（可选但建议）
-
-用记事本或任意文本编辑器打开 `.env` 文件，修改以下密码：
-
-```
-MINIO_ROOT_PASSWORD=你的密码（至少8位）
-NIFI_ADMIN_PASS=你的密码（至少12位）
-```
-
-> 如果只是自己测试，也可以不改，用默认密码。
-
-### 第二步：生成平台内部证书
+### 4.2 按场景选择
 
 ```bash
+bash init.sh                                    # 最小部署（6 服务，无认证）
+bash init.sh --secure                           # 加 ES/Kibana 认证
+bash init.sh --secure --monitor                 # 加认证 + 监控
+bash init.sh --secure --with-safeline           # 加认证 + WAF
+bash init.sh --secure --monitor --with-safeline # 全功能
+```
+
+### 4.3 手动逐步部署（备选）
+
+如果你需要完全控制每一步，可以手动执行：
+
+```bash
+# 1. 配置密码（可选）
+notepad .env
+
+# 2. 生成证书
 docker compose run --rm cert-init
-```
 
-你会看到类似这样的输出，说明证书生成成功：
-
-```
-[cert-init] Generating Platform 1 Root CA...
-[cert-init] Generating certificate for: vault
-[cert-init] Generating certificate for: nifi
-[cert-init] Generating certificate for: minio
-[cert-init] All certificates generated successfully.
-```
-
-### 第三步：启动所有服务
-
-```bash
+# 3. 启动服务
 docker compose up -d
-```
 
-> `-d` 表示后台运行。首次启动需要**下载镜像**（约 3-5 GB），请耐心等待 5-15 分钟，取决于你的网速。
-
-**查看启动进度**（可以另开一个终端窗口）：
-
-```bash
-docker compose logs -f
-```
-
-按 `Ctrl+C` 退出日志查看（不会停止服务）。
-
-**等待所有服务就绪**：
-
-```bash
+# 4. 等待 healthy（约 3-5 分钟）
 docker compose ps
-```
 
-当所有服务的 `STATUS` 列显示 `healthy` 时，说明平台启动完成。这个过程需要 3-5 分钟（ES 和 NiFi 启动较慢）。
-
-### 第四步：初始化平台组件
-
-依次执行以下命令（每次等上一步完成再执行下一个）：
-
-```bash
-# 1. 初始化 Vault（密钥管理引擎）
+# 5. 依次初始化
 docker compose run --rm vault-init
-
-# 2. 初始化 MinIO（创建存储桶和过期策略）
 docker compose run --rm minio-init
-
-# 3. 初始化 Kibana（创建数据视图和仪表板）
 docker compose run --rm kibana-init
-
-# 4. 初始化 NiFi（导入数据流模板）
 docker compose run --rm nifi-init
 ```
 
-看到每条命令输出 `complete` 或 `setup complete` 就说明初始化成功。
-
 ---
 
-## 5. 验证部署
-
-### 一键健康检查
-
-```bash
-docker compose run --rm health-check
-```
-
-输出示例：
-
-```
-========================================
-  Platform 1 Docker Health Check
-========================================
-  [UP]    Vault            :8200
-  [UP]    Elasticsearch    :9200
-  [UP]    Kibana           :5601
-  [UP]    MinIO API        :9000
-  [UP]    MinIO Console    :9001
-  [UP]    NiFi             :8443
-  Summary: 6 UP, 0 DOWN
-```
-
-### 手动抽查
-
-在浏览器中访问以下地址确认服务正常：
-
-| 地址 | 预期看到什么 |
-|------|-------------|
-| http://localhost:9200 | 一个 JSON 文本，包含 `cluster_name` 和 `version` |
-| http://localhost:5601 | Kibana 首页界面 |
-| http://localhost:9001 | MinIO 登录页面 |
-
----
-
-## 6. 访问与演示
+## 5. 访问与演示
 
 部署完成、健康检查全部通过后，可以开始演示平台功能。
 
@@ -301,7 +299,7 @@ docker compose exec bridge python3 /scripts/bridge-nifi.py
 
 ---
 
-## 7. 常用操作
+## 6. 常用操作
 
 ### 停止平台
 
@@ -325,7 +323,7 @@ docker compose up -d
 docker compose down -v
 ```
 
-然后从[部署平台](#4-部署平台)的第二步重新开始。
+然后从[部署选项说明](#4-部署选项说明)重新开始，或直接运行 `bash init.sh --reset --secure`。
 
 ### 查看某个服务的日志
 
@@ -344,7 +342,7 @@ docker compose restart kibana
 
 ---
 
-## 8. 故障排查
+## 7. 故障排查
 
 ### Q: 执行 `docker compose up -d` 后一直卡着不动
 
