@@ -57,10 +57,20 @@ bash init.sh --reset --secure --monitor --with-safeline
 | `--secure` | 启用 ES/Kibana 认证，自动生成随机密码写入 `.env` |
 | `--monitor` | 附加部署 Prometheus + Grafana 监控栈 |
 | `--with-safeline` | 附加部署 SafeLine CE（雷池 WAF，7 容器） |
+| `--strict` | 严格模式，任一 init 容器失败则中止部署 |
 | `--reset` | 删除所有数据卷，全新初始化 |
-| `--skip-init` | 只启动服务，跳过 4 个初始化容器 |
+| `--skip-init` | 只启动服务，跳过初始化容器 |
 | `--backup` | 执行数据备份（ES 快照 + Vault 导出 + .env） |
 | `--restore PATH` | 从指定备份路径恢复数据 |
+
+### `.env` 可选配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `BIND_ADDRESS` | `127.0.0.1` | 服务端口绑定地址；设为 `0.0.0.0` 允许局域网访问 |
+| `ES_MEM_LIMIT` | `3g` | ES 容器内存上限 |
+| `ES_CPUS` | `2` | ES 容器 CPU 核数上限 |
+| `ES_MEMORY` | `2g` | ES JVM 堆内存 |
 
 ### 部署后访问
 

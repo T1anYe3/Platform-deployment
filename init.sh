@@ -5,12 +5,13 @@
 #
 # 选项:
 #   --reset         删除所有数据卷，全新初始化（会丢失数据）
-#   --skip-init     只启动服务，不运行 4 个 init 容器
+#   --skip-init     只启动服务，不运行 init 容器
 #   --with-safeline 同时部署 SafeLine CE（雷池 WAF）
-#   --secure        启用 ES/Kibana 认证（自动生成密码）
+#   --secure        启用 ES/Kibana 认证（自动生成随机密码）
+#   --monitor       附加部署 Prometheus + Grafana 监控栈
 #   --backup        执行数据备份
-#   --restore PATH  从指定路径恢复数据
-#   --monitor       附加部署 Prometheus + Grafana 监控
+#   --restore PATH  从指定备份路径恢复数据
+#   --strict        严格模式，任一 init 失败则中止部署
 #   --help          显示帮助
 # ==========================================================================
 
@@ -55,7 +56,7 @@ for arg in "$@"; do
     --backup)         BACKUP=true ;;
     --restore)        shift; RESTORE_PATH="$1" ;;
     --strict)         STRICT_MODE=true ;;
-    --help)           echo "用法: bash init.sh [--reset] [--skip-init] [--with-safeline] [--secure] [--monitor] [--backup] [--restore PATH]"; exit 0 ;;
+    --help)           echo "用法: bash init.sh [--reset] [--skip-init] [--with-safeline] [--secure] [--monitor] [--strict] [--backup] [--restore PATH]"; exit 0 ;;
     *)                err "未知参数: $arg"; exit 1 ;;
   esac
 done
