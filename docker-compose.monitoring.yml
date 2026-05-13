@@ -23,11 +23,27 @@ services:
       - "9090:9090"
     volumes:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=15d'
+    restart: unless-stopped
+    networks:
+      - platform1-docker_platform1
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: platform1-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./config/prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
     restart: unless-stopped
     networks:
       - platform1-docker_platform1
@@ -52,6 +68,7 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
+  alertmanager-data:
 
 networks:
   platform1-docker_platform1:

@@ -103,16 +103,18 @@ if $SECURE; then
     } >> .env
     warn "密码已写入 .env 文件（请勿提交到 Git）"
   else
-    warn ".env 中已存在 ELASTIC_PASSWORD，跳过生成（使用 --reset 可重新生成）"
+    warn ".env 中已存在 ELASTIC_PASSWORD，从 .env 加载现有密码..."
+    export $(grep -E '^(ELASTIC_PASSWORD|KIBANA_ES_PASSWORD|KIBANA_ENCRYPTION_KEY|ES_USER|KIBANA_ES_USER|ES_SECURITY_ENABLED)=' .env | xargs)
   fi
 else
   export ES_SECURITY_ENABLED=false
 fi
 
-# Export for docker compose
+# Export for docker compose (ensure they're set even if empty for non-secure mode)
 export ES_SECURITY_ENABLED
 export ELASTIC_PASSWORD="${ELASTIC_PASSWORD:-}"
 export KIBANA_ES_PASSWORD="${KIBANA_ES_PASSWORD:-}"
+export ES_USER="${ES_USER:-elastic}"
 export KIBANA_ENCRYPTION_KEY="${KIBANA_ENCRYPTION_KEY:-platform1-kibana-demo-key-32chars}"
 
 # ---- Step 0.7: --backup / --restore ----
@@ -148,6 +150,13 @@ fi
 # ---- Step 1.5: 下载 Suricata ET Open 规则 ----
 log "Step 1.5: 下载 Suricata ET Open 规则集..."
 docker compose run --rm suricata-update-init 2>/dev/null || warn "ET Open 规则下载失败（网络可能不可用），使用本地规则继续。"
+# Verify rules count
+RULES_COUNT=$(docker run --rm -v platform1-docker_suricata-rules:/rules alpine:3.20 wc -l < /rules/et-open.rules 2>/dev/null || echo 0)
+if [ "$RULES_COUNT" -gt 1000 ]; then
+  info "ET Open 规则加载成功：${RULES_COUNT} 条"
+else
+  warn "ET Open 规则仅 ${RULES_COUNT} 条（预期 > 30000），仅使用本地 3 条规则"
+fi
 echo ""
 
 # ---- Step 2: 启动所有服务 ----
@@ -273,6 +282,7 @@ if $WITH_SAFELINE; then
 fi
 if $MONITOR; then
   check_url "Prometheus"     "http://localhost:9090"
+  check_url "AlertManager"   "http://localhost:9093"
   check_url "Grafana"        "http://localhost:3000"
 fi
 
