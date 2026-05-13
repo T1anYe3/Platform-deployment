@@ -5,8 +5,8 @@ import os, sys, json, time, subprocess
 from bridge_common import es_request, es_bulk_index, ensure_index_template, ES_URL
 
 NIFI_URL = os.environ.get('NIFI_URL', 'https://nifi:8443')
-NIFI_USER = os.environ.get('NIFI_ADMIN_USER', 'admin')
-NIFI_PASS = os.environ.get('NIFI_ADMIN_PASS', 'Admin123!ChangeMe')
+NIFI_USER = os.environ['NIFI_ADMIN_USER']
+NIFI_PASS = os.environ['NIFI_ADMIN_PASS']
 STATE_FILE = '/state/nifi-bridge.json'
 
 NIFI_MAPPINGS = {

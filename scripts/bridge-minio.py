@@ -5,8 +5,8 @@ import os, sys, json, time, subprocess
 from bridge_common import es_request, es_bulk_index, ensure_index_template, ES_URL
 
 MINIO_URL = os.environ.get('MINIO_URL', 'https://minio:9000')
-MINIO_USER = os.environ.get('MINIO_ROOT_USER', 'minioadmin')
-MINIO_PASS = os.environ.get('MINIO_ROOT_PASSWORD', 'ChangeThis-Local-123!')
+MINIO_USER = os.environ['MINIO_ROOT_USER']
+MINIO_PASS = os.environ['MINIO_ROOT_PASSWORD']
 STATE_FILE = '/state/minio-bridge.json'
 MC_ALIAS = 'platform1'
 

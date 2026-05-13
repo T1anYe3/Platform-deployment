@@ -5,8 +5,8 @@ set -e
 
 MINIO_ALIAS="platform1"
 MINIO_URL="https://minio:9000"
-MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
-MINIO_PASS="${MINIO_ROOT_PASSWORD:-ChangeThis-Local-123!}"
+MINIO_USER="${MINIO_ROOT_USER:?MINIO_ROOT_USER not set}"
+MINIO_PASS="${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD not set}"
 
 echo "[minio-init] Configuring MinIO client..."
 mc alias set ${MINIO_ALIAS} ${MINIO_URL} ${MINIO_USER} ${MINIO_PASS} --insecure

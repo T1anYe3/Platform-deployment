@@ -6,8 +6,8 @@ from bridge_common import es_request, es_bulk_index, ensure_index_template, ES_U
 import ssl
 
 SAFELINE_URL = os.environ.get('SAFELINE_URL', 'https://safeline:9443')
-SAFELINE_USER = os.environ.get('SAFELINE_ADMIN_USER', 'admin')
-SAFELINE_PASS = os.environ.get('SAFELINE_ADMIN_PASS', 'w4WmJByY')
+SAFELINE_USER = os.environ['SAFELINE_ADMIN_USER']
+SAFELINE_PASS = os.environ['SAFELINE_ADMIN_PASS']
 STATE_FILE = '/state/safeline-bridge.json'
 
 ctx = ssl.create_default_context()

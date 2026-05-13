@@ -44,6 +44,7 @@ SECURE=false
 MONITOR=false
 BACKUP=false
 RESTORE_PATH=""
+STRICT_MODE=false
 for arg in "$@"; do
   case "$arg" in
     --reset)          RESET=true ;;
@@ -53,6 +54,7 @@ for arg in "$@"; do
     --monitor)        MONITOR=true ;;
     --backup)         BACKUP=true ;;
     --restore)        shift; RESTORE_PATH="$1" ;;
+    --strict)         STRICT_MODE=true ;;
     --help)           echo "用法: bash init.sh [--reset] [--skip-init] [--with-safeline] [--secure] [--monitor] [--backup] [--restore PATH]"; exit 0 ;;
     *)                err "未知参数: $arg"; exit 1 ;;
   esac
@@ -206,11 +208,20 @@ else
 
   run_init() {
     local name="$1"
+    local logfile
+    logfile="/tmp/init-${name}-$(date +%s).log"
     echo -n "  ${name}..."
-    if docker compose run --rm "${name}" >/dev/null 2>&1; then
+    if docker compose run --rm "${name}" >"${logfile}" 2>&1; then
       echo -e " ${GREEN}OK${NC}"
+      rm -f "${logfile}"
     else
-      echo -e " ${YELLOW}FAIL (查看日志: docker compose logs ${name})${NC}"
+      echo -e " ${RED}FAIL${NC} (日志: ${logfile})"
+      echo -e "  ${YELLOW}最后 3 行:${NC}"
+      tail -3 "${logfile}" 2>/dev/null | while read line; do echo "    $line"; done
+      if ${STRICT_MODE:-false}; then
+        err "严格模式: ${name} 失败，部署中止。"
+        exit 1
+      fi
     fi
   }
 

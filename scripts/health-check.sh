@@ -1,81 +1,72 @@
 #!/bin/sh
-# Platform 1 Health Check - verifies all services are running
+# Platform 1 Functional Health Check
+# Verifies services are not just reachable but functionally correct
+# Usage: docker compose run --rm health-check [--json]
 
-echo "========================================"
-echo "  Platform 1 Docker Health Check"
-echo "  $(date '+%Y-%m-%d %H:%M:%S')"
-echo "========================================"
-echo ""
+set -e
 
-check_http() {
-  local NAME=$1 URL=$2 TIMEOUT=${3:-5}
-  if curl -sk --connect-timeout "$TIMEOUT" "$URL" >/dev/null 2>&1; then
-    echo "  [UP]    $NAME"
-    return 0
-  else
-    echo "  [DOWN]  $NAME"
-    return 1
-  fi
-}
-
-check_port() {
-  local NAME=$1 HOST=$2 PORT=$3
-  if timeout 3 sh -c "echo >/dev/tcp/$HOST/$PORT" 2>/dev/null; then
-    echo "  [UP]    $NAME :$PORT"
-    return 0
-  else
-    echo "  [DOWN]  $NAME :$PORT"
-    return 1
-  fi
-}
+OUTPUT_JSON=false
+[ "$1" = "--json" ] && OUTPUT_JSON=true
 
 UP=0
 DOWN=0
+DETAILS=""
 
-echo "--- Core Services ---"
-check_http "Vault"            "https://localhost:8200/v1/sys/health" 5 && UP=$((UP+1)) || DOWN=$((DOWN+1))
-check_http "Elasticsearch"    "http://localhost:9200" 5 && UP=$((UP+1)) || DOWN=$((DOWN+1))
-check_http "Kibana"           "http://localhost:5601/api/status" 10 && UP=$((UP+1)) || DOWN=$((DOWN+1))
-check_http "MinIO API"        "http://localhost:9000/minio/health/live" 5 && UP=$((UP+1)) || DOWN=$((DOWN+1))
-check_http "MinIO Console"    "http://localhost:9001" 5 && UP=$((UP+1)) || DOWN=$((DOWN+1))
+check() {
+  local label="$1" url="$2" expected_pattern="$3" extra_msg="$4"
+  local code result
+  code=$(curl -sk -o /tmp/hc-$$.txt -w '%{http_code}' --connect-timeout 5 "$url" 2>/dev/null || echo "000")
+  result=$(cat /tmp/hc-$$.txt 2>/dev/null | head -c 200)
 
-echo ""
-echo "--- Security Services ---"
-check_http "NiFi"             "https://localhost:8443/nifi-api/access/config" 10 && UP=$((UP+1)) || DOWN=$((DOWN+1))
-check_http "SafeLine WAF"     "https://localhost:9443" 10 && UP=$((UP+1)) || DOWN=$((DOWN+1))
+  if [ "$code" = "200" ] || [ "$code" = "307" ] || [ "$code" = "302" ] || [ "$code" = "301" ] || [ "$code" = "401" ]; then
+    if echo "$result" | grep -q "$expected_pattern" 2>/dev/null || [ -z "$expected_pattern" ]; then
+      UP=$((UP + 1))
+      DETAILS="${DETAILS}{\"name\":\"${label}\",\"status\":\"UP\",\"code\":${code}},"
+      [ "$OUTPUT_JSON" != "true" ] && echo "  [UP]    ${label}"
+    else
+      DOWN=$((DOWN + 1))
+      DETAILS="${DETAILS}{\"name\":\"${label}\",\"status\":\"DOWN\",\"reason\":\"pattern not found: ${expected_pattern}\"},"
+      [ "$OUTPUT_JSON" != "true" ] && echo "  [DOWN]  ${label} - unexpected response (missing '${expected_pattern}')"
+    fi
+  else
+    DOWN=$((DOWN + 1))
+    DETAILS="${DETAILS}{\"name\":\"${label}\",\"status\":\"DOWN\",\"code\":${code}},"
+    [ "$OUTPUT_JSON" != "true" ] && echo "  [DOWN]  ${label} - HTTP ${code}${extra_msg:+, ${extra_msg}}"
+  fi
+  rm -f /tmp/hc-$$.txt
+}
 
-echo ""
-echo "--- Docker Containers ---"
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | grep platform1 || echo "  (no containers found)"
-
-echo ""
-echo "--- Data Flow ---"
-ES_INDICES=$(curl -s "http://localhost:9200/_cat/indices?format=json" 2>/dev/null | python3 -c "
-import sys,json
-try:
-    indices = json.load(sys.stdin)
-    for i in indices:
-        if not i['index'].startswith('.'):
-            print(f\"  {i['index']:40s} docs={i.get('docs.count','?'):>6}\")
-except: pass
-" 2>/dev/null)
-if [ -n "$ES_INDICES" ]; then
-  echo "$ES_INDICES"
-  UP=$((UP+1))
-else
-  echo "  [DOWN]  ES indices not accessible"
-  DOWN=$((DOWN+1))
+if [ "$OUTPUT_JSON" != "true" ]; then
+  echo ""
+  echo "========================================"
+  echo "  Platform 1 Functional Health Check"
+  echo "========================================"
+  echo ""
 fi
 
-echo ""
-echo "========================================"
-echo "  Summary: $UP UP, $DOWN DOWN"
-echo "========================================"
-echo ""
-echo "  Access URLs:"
-echo "    Vault:        https://localhost:8200"
-echo "    Elasticsearch: http://localhost:9200"
-echo "    Kibana:        http://localhost:5601"
-echo "    MinIO Console: http://localhost:9001"
-echo "    NiFi:          https://localhost:8443/nifi"
-echo "    SafeLine WAF:  https://localhost:9443"
+# Core services
+check "Elasticsearch"   "http://elasticsearch:9200/_cluster/health" "cluster_name"
+check "Kibana"          "http://kibana:5601/api/status"             "Kibana"
+check "Vault"           "https://vault:8200/v1/sys/health"         "initialized"
+check "MinIO API"       "https://minio:9000/minio/health/live"     ""
+check "NiFi"            "https://nifi:8443/nifi-api/access/config" ""
+
+# Optional services (check if available)
+if curl -sk --connect-timeout 3 https://safeline-mgt:1443/api/open/health >/dev/null 2>&1; then
+  check "SafeLine WAF" "https://safeline-mgt:1443/api/open/health" ""
+fi
+
+if [ "$OUTPUT_JSON" = "true" ]; then
+  echo "{"
+  echo "  \"summary\": {\"up\": ${UP}, \"down\": ${DOWN}, \"total\": $((UP + DOWN))},"
+  echo "  \"checks\": [${DETAILS%,}]"
+  echo "}"
+else
+  echo ""
+  echo "----------------------------------------"
+  echo "  Summary: ${UP} UP, ${DOWN} DOWN"
+  echo "----------------------------------------"
+  echo ""
+fi
+
+[ "$DOWN" -eq 0 ] || exit 1
