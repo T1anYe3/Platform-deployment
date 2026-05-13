@@ -1,0 +1,209 @@
+version: "3.9"
+
+# Platform 3 - Compliance & Emergency Response Platform
+# Unified log aggregation & visualization
+#
+# Usage:
+#   1. docker compose run --rm cert-init     # generate TLS certs
+#   2. docker compose up -d                  # start all services
+#   3. docker compose run --rm vault-init    # initialize Vault
+#   4. docker compose run --rm ilm-init      # create ILM policies
+#   5. docker compose run --rm kibana-init   # create Index Patterns
+#   6. docker compose run --rm dashboard-init # create Dashboards
+
+services:
+
+  # ---- Init: Generate TLS Certificates for Vault ----
+  cert-init:
+    image: alpine:3.20
+    volumes:
+      - tls-data:/tls
+      - ./scripts:/scripts:ro
+    command: sh -c "apk add --no-cache openssl >/dev/null 2>&1 && sh /scripts/init-certs.sh && chmod -R a+r /tls"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    networks:
+      - platform3
+
+  # ---- Elasticsearch: Unified Log Backend ----
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.0
+    container_name: platform3-elasticsearch
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:19200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=${ES_SECURITY_ENABLED:-false}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+      - "ES_JAVA_OPTS=-Xms${ES_MEMORY:-2g} -Xmx${ES_MEMORY:-2g}"
+      - network.host=0.0.0.0
+    mem_limit: ${ES_MEM_LIMIT:-3g}
+    cpus: ${ES_CPUS:-2}
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - platform3
+
+  # ---- Kibana: Unified Visualization & Dashboards ----
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.4.0
+    container_name: platform3-kibana
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:15601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_HOST=0.0.0.0
+      - ELASTICSEARCH_USERNAME=${KIBANA_ES_USER:-kibana_system}
+      - ELASTICSEARCH_PASSWORD=${KIBANA_ES_PASSWORD:-}
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_ENCRYPTION_KEY:-}
+    mem_limit: 1g
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:5601/api/status | grep -q 'available' || exit 1"]
+      interval: 30s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+    networks:
+      - platform3
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # ---- Vault (Lightweight): Credential Management ----
+  vault:
+    image: hashicorp/vault:1.21
+    container_name: platform3-vault
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:18200:8200"
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - tls-data:/vault/tls:ro
+      - ./config/vault:/vault/config:ro
+      - vault-data:/vault/data
+    user: root
+    mem_limit: 512m
+    entrypoint: ["/bin/sh", "-c", "chown -R vault:vault /vault/data 2>/dev/null; exec /usr/local/bin/docker-entrypoint.sh vault server -config=/vault/config/vault.hcl"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "vault status -tls-skip-verify >/dev/null 2>&1 || [ $$? -eq 2 ]"]
+      interval: 30s
+      retries: 5
+    networks:
+      - platform3
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  # ---- Init Containers (run-once) ----
+
+  vault-init:
+    image: hashicorp/vault:1.21
+    container_name: platform3-vault-init
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./config:/config:ro
+      - tls-data:/tls:ro
+    environment:
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /tls/root-ca.crt
+    entrypoint: ["sh", "/scripts/init-vault.sh"]
+    depends_on:
+      vault:
+        condition: service_healthy
+    networks:
+      - platform3
+
+  ilm-init:
+    image: curlimages/curl:latest
+    container_name: platform3-ilm-init
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      ES_URL: http://elasticsearch:9200
+    entrypoint: ["sh", "/scripts/init-ilm.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - platform3
+
+  kibana-init:
+    image: curlimages/curl:latest
+    container_name: platform3-kibana-init
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./config:/config:ro
+    environment:
+      KIBANA_URL: http://kibana:5601
+    entrypoint: ["sh", "/scripts/init-kibana.sh"]
+    depends_on:
+      kibana:
+        condition: service_healthy
+    networks:
+      - platform3
+
+  dashboard-init:
+    image: python:3.12-alpine
+    container_name: platform3-dashboard-init
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      KIBANA_URL: http://kibana:5601
+    entrypoint: ["python3", "/scripts/init-dashboards.py"]
+    depends_on:
+      kibana-init:
+        condition: service_completed_successfully
+    networks:
+      - platform3
+
+  health-check:
+    image: curlimages/curl:latest
+    container_name: platform3-health-check
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["sh", "/scripts/health-check.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kibana:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    networks:
+      - platform3
+
+# ---- Volumes ----
+volumes:
+  tls-data:
+  vault-data:
+  es-data:
+
+# ---- Networks ----
+networks:
+  platform3:
+    name: platform3
+    driver: bridge

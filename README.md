@@ -1,3 +1,44 @@
+# Platform-deployment — 三平台安全防护体系 Docker 部署
+
+> **一键部署三个平台**，构建完整的数据安全防护体系。
+
+---
+
+## 三平台架构总览
+
+| 平台 | 定位 | 核心组件 | 一键部署 |
+|------|------|---------|---------|
+| **Platform 1** | 基础技术防护 | Vault + ES + Kibana + MinIO + NiFi + Suricata + SafeLine WAF | `bash init.sh --secure --monitor --with-safeline` |
+| **Platform 2** | 数据全生命周期管理 | Vault + ES + Kibana + MinIO + NiFi + Bridge | `cd platform2 && bash init.sh --secure` |
+| **Platform 3** | 合规与应急响应 | ES + Kibana + Vault + 5源日志汇聚 | `cd platform3 && bash init.sh --secure` |
+
+### 架构关系
+
+```
+Platform 1 (安全防护层)
+  ├── WAF/IDS 检测 → ES → Kibana 可视化
+  ├── Vault 统一凭据管理（为 P2/P3 提供密钥服务）
+  └── 安全事件日志
+
+Platform 2 (数据管理层)
+  ├── NiFi 数据流编排 → MinIO 对象存储
+  ├── Bridge 数据管道 → ES 索引
+  └── Vault 凭据集成
+
+Platform 3 (合规展示层)
+  ├── 5源日志汇聚（WAF + IDS + Vault + MinIO + NiFi）
+  ├── 统一 Dashboard（安全总览 + 数据生命周期）
+  └── ILM 日志生命周期管理
+```
+
+### 快速导航
+
+- [Platform 1 详细文档](#platform-1--基础技术防护平台)
+- [Platform 2 详细文档](platform2/README.md)
+- [Platform 3 详细文档](platform3/README.md)
+
+---
+
 # Platform 1 — 基础技术防护平台 Docker 部署指南
 
 > **一键部署**：`bash init.sh --secure --monitor --with-safeline`

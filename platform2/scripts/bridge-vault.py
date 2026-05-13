@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Bridge: Vault audit log -> Elasticsearch (Platform 2)"""
+
+import os, sys, json, time
+from bridge_common import es_request, es_bulk_index, ensure_index_template, ES_URL
+
+AUDIT_LOG = '/vault/data/audit.log'
+STATE_FILE = '/state/vault-bridge.json'
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    return {'last_position': 0}
+
+def save_state(state):
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f)
+
+VAULT_AUDIT_MAPPINGS = {
+    '@timestamp': {'type': 'date'},
+    'event.source': {'type': 'keyword'},
+    'type': {'type': 'keyword'},
+    'auth': {
+        'properties': {
+            'display_name': {'type': 'keyword'},
+            'policies': {'type': 'keyword'},
+            'token_type': {'type': 'keyword'}
+        }
+    },
+    'request': {
+        'properties': {
+            'id': {'type': 'keyword'},
+            'operation': {'type': 'keyword'},
+            'path': {'type': 'keyword'},
+            'remote_address': {'type': 'keyword'}
+        }
+    },
+    'error': {'type': 'keyword'},
+    'message': {'type': 'text'}
+}
+
+def get_new_entries(state):
+    if not os.path.exists(AUDIT_LOG):
+        return [], state
+
+    file_size = os.path.getsize(AUDIT_LOG)
+    if file_size <= state['last_position']:
+        return [], state
+
+    docs = []
+    with open(AUDIT_LOG, 'r') as f:
+        if state['last_position'] > 0:
+            f.seek(state['last_position'])
+
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            doc = {
+                '@timestamp': entry.get('time', ''),
+                'event.source': 'vault',
+                'type': str(entry.get('type', '')),
+                'message': ''
+            }
+            if 'request' in entry:
+                doc['request'] = {
+                    'id': str(entry['request'].get('id', '')),
+                    'operation': str(entry['request'].get('operation', '')),
+                    'path': str(entry['request'].get('path', '')),
+                }
+                ra = str(entry['request'].get('remote_address', ''))
+                if ra and ra != 'None':
+                    doc['request']['remote_address'] = ra
+                doc['message'] = f"{entry['type']} {entry['request'].get('operation','')} {entry['request'].get('path','')}"
+            if 'auth' in entry:
+                doc['auth'] = {
+                    'display_name': str(entry['auth'].get('display_name', '')),
+                    'policies': ','.join(entry['auth'].get('policies', [])),
+                    'token_type': str(entry['auth'].get('token_type', ''))
+                }
+            if 'error' in entry:
+                doc['error'] = str(entry['error'])
+            docs.append(doc)
+
+    return docs, {'last_position': os.path.getsize(AUDIT_LOG)}
+
+def index_entries(docs):
+    if not docs:
+        return 0
+    lines = []
+    for i, doc in enumerate(docs):
+        ts = doc.get('@timestamp', '')
+        date = ts[:10].replace('-', '.') if ts else time.strftime('%Y.%m.%d')
+        lines.append(json.dumps({'index': {'_index': f'platform2-vault-audit-{date}', '_id': f'v-{i}'}}))
+        lines.append(json.dumps(doc, default=str))
+    es_bulk_index(lines)
+    return len(docs)
+
+def main():
+    state = load_state()
+    ensure_index_template('platform2-vault-audit', VAULT_AUDIT_MAPPINGS)
+    docs, new_state = get_new_entries(state)
+    indexed = index_entries(docs)
+    save_state(new_state)
+    print(f'Indexed {indexed} Vault audit entries')
+
+if __name__ == '__main__':
+    main()

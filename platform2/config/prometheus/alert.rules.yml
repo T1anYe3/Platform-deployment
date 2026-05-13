@@ -1,0 +1,21 @@
+groups:
+  - name: platform2
+    interval: 30s
+    rules:
+      - alert: ContainerDown
+        expr: absent(up{job="node"})
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Platform 2 node exporter is down"
+          description: "The node exporter metrics endpoint has been unreachable for over 1 minute. Services may be affected."
+
+      - alert: HighDiskUsage
+        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk usage above 80%"
+          description: "Root filesystem disk usage is {{ $value | humanize }}%. Consider cleaning old logs or expanding storage."

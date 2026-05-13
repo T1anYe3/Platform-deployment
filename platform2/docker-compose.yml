@@ -1,0 +1,370 @@
+# ============================================================
+# Platform 2 - Data Lifecycle Management Platform
+# Docker Compose Deployment
+#
+# Usage:
+#   1. docker compose run --rm cert-init     # generate TLS certs
+#   2. docker compose up -d                  # start all services
+#   3. docker compose run --rm vault-init    # initialize Vault
+#   4. docker compose run --rm minio-init    # setup MinIO buckets
+#   5. docker compose run --rm kibana-init   # import Kibana assets
+#   6. docker compose run --rm nifi-init     # import NiFi flow template
+# ============================================================
+
+services:
+
+  # ---- Init: Generate TLS Certificates ----
+  cert-init:
+    image: alpine:3.20
+    volumes:
+      - tls-data:/tls
+      - ./scripts:/scripts:ro
+    command: sh -c "apk add --no-cache openssl >/dev/null 2>&1 && sh /scripts/init-certs.sh && chmod -R a+r /tls"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    networks:
+      - platform2
+
+  # ---- Vault: Secrets & Credentials Management ----
+  vault:
+    image: hashicorp/vault:1.21
+    container_name: platform2-vault
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:8200:8200"
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - tls-data:/vault/tls:ro
+      - ./config/vault:/vault/config:ro
+      - vault-data:/vault/data
+    user: root
+    mem_limit: 512m
+    cpus: 1
+    entrypoint: ["/bin/sh", "-c", "chown -R vault:vault /vault/data 2>/dev/null; exec /usr/local/bin/docker-entrypoint.sh vault server -config=/vault/config/vault.hcl"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+    environment:
+      VAULT_ADDR: https://127.0.0.1:8200
+      VAULT_CACERT: /vault/tls/root-ca.crt
+    healthcheck:
+      test: ["CMD-SHELL", "vault status -tls-skip-verify >/dev/null 2>&1 || [ $$? -eq 2 ]"]
+      interval: 30s
+      retries: 5
+    networks:
+      - platform2
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  # ---- Elasticsearch: Log Storage & Retrieval ----
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.0
+    container_name: platform2-elasticsearch
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=${ES_SECURITY_ENABLED:-false}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+      - "ES_JAVA_OPTS=-Xms${ES_MEMORY:-2g} -Xmx${ES_MEMORY:-2g}"
+      - network.host=0.0.0.0
+    mem_limit: ${ES_MEM_LIMIT:-3g}
+    cpus: ${ES_CPUS:-2}
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+      - ./config/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "if [ \"${ES_SECURITY_ENABLED:-false}\" = \"true\" ]; then curl -s -u elastic:${ELASTIC_PASSWORD:-changeme} http://localhost:9200 >/dev/null || exit 1; else curl -s http://localhost:9200 >/dev/null || exit 1; fi"]
+      interval: 30s
+      retries: 10
+    networks:
+      - platform2
+
+  # ---- Kibana: Visualization & Dashboards ----
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.4.0
+    container_name: platform2-kibana
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:5601:5601"
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=${KIBANA_ES_USER:-}
+      - ELASTICSEARCH_PASSWORD=${KIBANA_ES_PASSWORD:-}
+      - XPACK_SECURITY_ENABLED=${ES_SECURITY_ENABLED:-false}
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_ENCRYPTION_KEY:-platform2-kibana-demo-key-32chars}
+    volumes:
+      - ./config/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    mem_limit: 1g
+    cpus: 1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "if [ \"${ES_SECURITY_ENABLED:-false}\" = \"true\" ]; then curl -s -u kibana_system:${KIBANA_ES_PASSWORD:-changeme} http://localhost:5601/api/status >/dev/null || exit 1; else curl -s http://localhost:5601/api/status >/dev/null || exit 1; fi"]
+      interval: 30s
+      retries: 10
+    networks:
+      - platform2
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # ---- MinIO: Object Storage for Data Lifecycle ----
+  minio:
+    image: minio/minio:latest
+    container_name: platform2-minio
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:9000:9000"
+      - "${BIND_ADDRESS:-127.0.0.1}:9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_SERVER_URL: https://minio:9000
+    volumes:
+      - minio-data:/data
+      - tls-data:/root/.minio/certs:ro
+    command: server /data --console-address :9001 --address :9000
+    mem_limit: 512m
+    cpus: 0.5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk http://localhost:9000/minio/health/live >/dev/null || exit 1"]
+      interval: 15s
+      retries: 5
+    networks:
+      - platform2
+
+  # ---- Apache NiFi: Data Flow Orchestration ----
+  nifi:
+    image: apache/nifi:2.3.0
+    container_name: platform2-nifi
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:8443:8443"
+    environment:
+      NIFI_WEB_HTTPS_HOST: 0.0.0.0
+      NIFI_WEB_HTTPS_PORT: "8443"
+      NIFI_WEB_PROXY_HOST: nifi:8443
+      SINGLE_USER_CREDENTIALS_USERNAME: ${NIFI_ADMIN_USER}
+      SINGLE_USER_CREDENTIALS_PASSWORD: ${NIFI_ADMIN_PASS}
+      NIFI_SENSITIVE_PROPS_KEY: platform2-nifi-sensitive-key-32
+    mem_limit: 2g
+    cpus: 2
+    volumes:
+      - nifi-data:/opt/nifi/nifi-current/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://localhost:8443/nifi-api/system-diagnostics >/dev/null 2>&1"]
+      interval: 30s
+      retries: 15
+      start_period: 180s
+    networks:
+      - platform2
+
+  # ---- Bridge Runner: Scheduled data ingestion ----
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: platform2-bridge
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts:ro
+      - bridge-state:/state
+      - tls-data:/tls:ro
+      - vault-data:/vault/data:ro
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_USER: ${ES_USER:-elastic}
+      ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:-}
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /tls/root-ca.crt
+      MINIO_URL: https://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      NIFI_URL: https://nifi:8443
+      NIFI_ADMIN_USER: ${NIFI_ADMIN_USER}
+      NIFI_ADMIN_PASS: ${NIFI_ADMIN_PASS}
+      ES_VAULT_INDEX: platform2-vault-audit
+      ES_MINIO_INDEX: platform2-minio-audit
+      ES_NIFI_INDEX: platform2-nifi-logs
+    command: ["python", "/scripts/bridge-runner.py"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f bridge-runner.py >/dev/null || exit 1"]
+      interval: 30s
+      retries: 3
+      start_period: 30s
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    restart: unless-stopped
+    networks:
+      - platform2
+
+# ---- Init Runners (run-once, via docker compose run) ----
+
+  es-users-init:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.0
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      KIBANA_ES_PASSWORD: ${KIBANA_ES_PASSWORD:-}
+      ES_SECURITY_ENABLED: ${ES_SECURITY_ENABLED:-false}
+    entrypoint: ["sh", "/scripts/init-es-users.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - platform2
+
+  dashboard-init:
+    image: python:3.12-alpine
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      KIBANA_URL: http://kibana:5601
+    entrypoint: ["python3", "/scripts/init-dashboards.py"]
+    depends_on:
+      kibana:
+        condition: service_healthy
+    networks:
+      - platform2
+
+  ilm-init:
+    image: curlimages/curl:latest
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_USER: ${ES_USER:-}
+      ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:-}
+    entrypoint: ["sh", "/scripts/init-ilm.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - platform2
+
+  vault-init:
+    image: hashicorp/vault:1.21
+    volumes:
+      - tls-data:/tls:ro
+      - ./config/vault:/vault/config:ro
+      - vault-data:/vault/data
+      - ./scripts:/scripts:ro
+    environment:
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /tls/root-ca.crt
+    entrypoint: ["sh", "/scripts/init-vault.sh"]
+    depends_on:
+      vault:
+        condition: service_healthy
+    networks:
+      - platform2
+
+  minio-init:
+    image: minio/mc:latest
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    entrypoint: ["sh", "/scripts/init-minio.sh"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - platform2
+
+  kibana-init:
+    image: curlimages/curl:latest
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      KIBANA_URL: http://kibana:5601
+    entrypoint: ["sh", "/scripts/init-kibana.sh"]
+    depends_on:
+      kibana:
+        condition: service_healthy
+    networks:
+      - platform2
+
+  nifi-init:
+    image: curlimages/curl:latest
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      NIFI_URL: https://nifi:8443
+      NIFI_ADMIN_USER: ${NIFI_ADMIN_USER}
+      NIFI_ADMIN_PASS: ${NIFI_ADMIN_PASS}
+    entrypoint: ["sh", "/scripts/init-nifi.sh"]
+    depends_on:
+      nifi:
+        condition: service_healthy
+    networks:
+      - platform2
+
+  health-check:
+    image: curlimages/curl:latest
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["sh", "/scripts/health-check.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kibana:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      nifi:
+        condition: service_healthy
+    networks:
+      - platform2
+
+# ---- Volumes ----
+volumes:
+  tls-data:
+  vault-data:
+  es-data:
+  minio-data:
+  nifi-data:
+  nifi-flow:
+  bridge-state:
+
+# ---- Networks ----
+networks:
+  platform2:
+    driver: bridge
